@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>日常の物事の実行有無を記録するアプリ</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: Canvas;
+      --fg: CanvasText;
+      --muted: color-mix(in oklab, var(--fg) 50%, transparent);
+      --line: color-mix(in oklab, var(--fg) 12%, var(--bg));
+      --accent: hsl(210 90% 56%);
+      --accent-muted: color-mix(in oklab, var(--accent) 20%, var(--bg));
+      --radius: 12px;
+    }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif; margin: 24px; background: var(--bg); color: var(--fg); }
+    h1 { font-size: 1.25rem; margin: 0 0 12px; letter-spacing: .02em; }
+    .app { max-width: 720px; margin: 0 auto; }
+    .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: 0 2px 10px color-mix(in oklab, var(--fg) 10%, transparent); background: var(--bg); }
+
+    .toolbar { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; margin-bottom: 8px; }
+    .actions { display: inline-flex; gap: 8px; align-items: center; }
+    .small { font-size: .9rem; }
+    .muted { color: var(--muted); }
+
+    form.add { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 12px 0 16px; }
+    input[type="text"] { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+    button:hover { background: color-mix(in oklab, var(--fg) 6%, var(--bg)); }
+    button.secondary { background: var(--bg); }
+
+    ul.list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    li.item { display: grid; grid-template-columns: 24px 1fr auto; align-items: start; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; transition: background .2s ease, border-color .2s ease; }
+
+    .label-block { display: flex; flex-direction: column; }
+    .label { font-size: 1rem; line-height: 1.3; }
+    .timestamp { font-size: .85rem; color: var(--muted); margin-top: 2px; }
+
+    li.item .del { padding: 6px 10px; border-radius: 8px; }
+    li.item.done { background: var(--accent-muted); border-color: color-mix(in oklab, var(--accent) 60%, var(--line)); }
+    li.item.done .label { font-weight: 600; }
+    li.item.done .timestamp { color: color-mix(in oklab, var(--fg) 65%, transparent); }
+
+    li.item:has(input:checked) { background: var(--accent-muted); border-color: color-mix(in oklab, var(--accent) 60%, var(--line)); }
+    input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>日常の物事の実行有無を記録</h1>
+    <div class="card">
+      <div class="toolbar">
+        <div class="small muted">チェックすると日時を記録します。外すと記録を消去します。</div>
+        <div class="actions">
+          <button id="clearAllBtn" class="secondary small" type="button" title="チェックが付いている項目をすべてオフにする">すべてオフ</button>
+          <button id="exportBtn" class="secondary small" type="button" title="現在のリストをJSONとして保存">エクスポート</button>
+        </div>
+      </div>
+      <form class="add" id="addForm">
+        <input id="newItemInput" type="text" inputmode="text" autocomplete="off" placeholder="新しい項目名（例：ガス栓の確認）" />
+        <button type="submit">追加</button>
+      </form>
+      <ul class="list" id="list"></ul>
+      <div class="small muted" style="margin-top:10px">データはブラウザのローカルストレージに保存されます。</div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const STORAGE_KEY = 'dailyChecklist.v1';
+
+      function load() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return null;
+          const data = JSON.parse(raw);
+          if (!Array.isArray(data)) return null;
+          return data;
+        } catch (e) {
+          console.warn('Failed to parse storage', e);
+          return null;
+        }
+      }
+
+      function save(items) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+      }
+
+      function defaultItems() {
+        return [
+          { id: crypto.randomUUID?.() || String(Date.now()+1), label: '鍵の施錠', checked: false, timestamp: null },
+          { id: crypto.randomUUID?.() || String(Date.now()+2), label: '窓の施錠', checked: false, timestamp: null },
+          { id: crypto.randomUUID?.() || String(Date.now()+3), label: '部屋の消灯', checked: false, timestamp: null },
+        ];
+      }
+
+      function formatTs(ts) {
+        if (!ts) return '';
+        try {
+          return new Date(ts).toLocaleString('ja-JP');
+        } catch {
+          return '';
+        }
+      }
+
+      let items = load() || defaultItems();
+      save(items);
+
+      const listEl = document.getElementById('list');
+      const addForm = document.getElementById('addForm');
+      const newItemInput = document.getElementById('newItemInput');
+      const exportBtn = document.getElementById('exportBtn');
+      const clearAllBtn = document.getElementById('clearAllBtn');
+
+      function render() {
+        listEl.innerHTML = '';
+        if (items.length === 0) {
+          const empty = document.createElement('li');
+          empty.className = 'item';
+          empty.textContent = '項目がありません。上の入力欄から追加してください。';
+          listEl.appendChild(empty);
+          return;
+        }
+        for (const it of items) {
+          const li = document.createElement('li');
+          li.className = 'item';
+
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!it.checked;
+          cb.setAttribute('aria-label', it.label + ' の実行有無');
+
+          const labelBlock = document.createElement('div');
+          labelBlock.className = 'label-block';
+
+          const label = document.createElement('div');
+          label.className = 'label';
+          label.textContent = it.label;
+
+          const time = document.createElement('div');
+          time.className = 'timestamp';
+          time.textContent = it.timestamp ? formatTs(it.timestamp) : '';
+
+          labelBlock.appendChild(label);
+          labelBlock.appendChild(time);
+
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'secondary small del';
+          delBtn.textContent = '削除';
+          delBtn.title = 'この項目を削除する';
+
+          li.appendChild(cb);
+          li.appendChild(labelBlock);
+          li.appendChild(delBtn);
+
+          li.classList.toggle('done', !!it.checked);
+
+          cb.addEventListener('change', () => {
+            it.checked = cb.checked;
+            it.timestamp = cb.checked ? Date.now() : null;
+            time.textContent = it.timestamp ? formatTs(it.timestamp) : '';
+            li.classList.toggle('done', cb.checked);
+            save(items);
+          });
+
+          delBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const targetId = it.id; // 保険：参照切れ対策に現在のIDをキャプチャ
+            if (!confirm(`「${it.label}」を削除しますか？`)) return;
+            const next = items.filter(x => x.id !== targetId);
+            if (next.length !== items.length) {
+              items = next;
+              save(items);
+              render();
+            }
+          });
+
+          listEl.appendChild(li);
+        }
+      }
+
+      addForm.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const name = newItemInput.value.trim();
+        if (!name) {
+          newItemInput.focus();
+          return;
+        }
+        const exists = items.some(i => i.label === name);
+        if (exists && !confirm(`「${name}」は既にあります。追加しますか？`)) {
+          return;
+        }
+        items.push({ id: crypto.randomUUID?.() || String(Date.now()+Math.random()), label: name, checked: false, timestamp: null });
+        save(items);
+        newItemInput.value = '';
+        render();
+      });
+
+      exportBtn.addEventListener('click', () => {
+        const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const dt = new Date();
+        const fname = `checklist-backup-${dt.getFullYear()}${String(dt.getMonth()+1).padStart(2,'0')}${String(dt.getDate()).padStart(2,'0')}.json`;
+        a.download = fname;
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+
+      clearAllBtn.addEventListener('click', () => {
+        if (!confirm('チェックが付いている項目をすべてオフにしますか？')) return;
+        let changed = false;
+        items = items.map(it => {
+          if (it.checked) { changed = true; return { ...it, checked: false, timestamp: null }; }
+          return it;
+        });
+        if (changed) save(items);
+        render();
+      });
+
+      render();
+    })();
+  </script>
+</body>
+</html>
